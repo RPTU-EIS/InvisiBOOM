@@ -41,6 +41,9 @@
 //    - ability to turn off things if VM is disabled
 //    - reconsider port count of the wakeup, retry stuff
 
+// Additional source code by Mohammad Rahmani Fadiheh, Tobias Jauch, Alex Wezel and Philipp Schmitz: 04/04/2025 (Meltdown Fix)
+
+
 package boom.lsu
 
 import chisel3._
@@ -175,6 +178,7 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
 
   val executed            = Bool() // load sent to memory, reset by NACKs
   val succeeded           = Bool()
+  val failure             = Bool() // added by tojauch for Meltdown fix
   val order_fail          = Bool()
   val observed            = Bool()
 
@@ -290,11 +294,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   for (w <- 0 until coreWidth)
   {
-    ldq_full = WrapInc(ld_enq_idx, numLdqEntries) === ldq_head
+    // ldq_full = WrapInc(ld_enq_idx, numLdqEntries) === ldq_head // did not allow full usage of the queue
+    ldq_full = (ld_enq_idx === ldq_head) && ldq(ldq_head).valid // added by mofadiheh to use entire LDQ
     io.core.ldq_full(w)    := ldq_full
     io.core.dis_ldq_idx(w) := ld_enq_idx
 
-    stq_full = WrapInc(st_enq_idx, numStqEntries) === stq_head
+    // stq_full = WrapInc(st_enq_idx, numStqEntries) === stq_head // did not allow full usage of the queue
+    stq_full = (st_enq_idx === stq_head) && stq(stq_head).valid // added by mofadiheh to use entire STQ
+    
     io.core.stq_full(w)    := stq_full
     io.core.dis_stq_idx(w) := st_enq_idx
 
@@ -311,6 +318,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.executed        := false.B
       ldq(ld_enq_idx).bits.succeeded       := false.B
       ldq(ld_enq_idx).bits.order_fail      := false.B
+      ldq(ld_enq_idx).bits.failure         := false.B // added by tojauch for Meltdown fix
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
 
@@ -465,12 +473,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                ( ldq_retry_e.valid                            &&
                                  ldq_retry_e.bits.addr.valid                  &&
                                  ldq_retry_e.bits.addr_is_virtual             &&
+                                !ldq_retry_e.bits.failure                     && // added by tojauch for Meltdown Fix
                                 !p1_block_load_mask(ldq_retry_idx)            &&
                                 !p2_block_load_mask(ldq_retry_idx)            &&
                                 RegNext(dtlb.io.miss_rdy)                     &&
                                 !store_needs_order                            &&
                                 (w == memWidth-1).B                           && // TODO: Is this best scheduling?
                                 !ldq_retry_e.bits.order_fail))
+
 
   // Can we retry a store addrgen that missed in the TLB
   // - Weird edge case when sta_retry and std_incoming for same entry in same cycle. Delay this
@@ -505,6 +515,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                               !ldq_wakeup_e.bits.addr_is_virtual                       &&
                               !ldq_wakeup_e.bits.executed                              &&
                               !ldq_wakeup_e.bits.order_fail                            &&
+                              !ldq_wakeup_e.bits.failure                               && // added by tojauch for Meltdown Fix
                               !p1_block_load_mask(ldq_wakeup_idx)                      &&
                               !p2_block_load_mask(ldq_wakeup_idx)                      &&
                               !store_needs_order                                       &&
@@ -667,10 +678,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   // TODO check for xcpt_if and verify that never happens on non-speculative instructions.
   val mem_xcpt_valids = RegNext(widthMap(w =>
-                     (pf_ld(w) || pf_st(w) || ae_ld(w) || ae_st(w) || ma_ld(w) || ma_st(w)) &&
-                     !io.core.exception &&
-                     !IsKilledByBranch(io.core.brupdate, exe_tlb_uop(w))))
-  val mem_xcpt_uops   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, exe_tlb_uop(w))))
+    (pf_ld(w) || pf_st(w) || ae_ld(w) || ae_st(w) || ma_ld(w) || ma_st(w)) &&
+      !io.core.exception &&
+      Mux(will_fire_load_wakeup(w), !IsKilledByBranch(io.core.brupdate, ldq(ldq_wakeup_idx).bits.uop), !IsKilledByBranch(io.core.brupdate, exe_tlb_uop(w))))) // added by tojauch for Meltdown Fix
+  val mem_xcpt_uops   = RegNext(widthMap(w => Mux(will_fire_load_wakeup(w), UpdateBrMask(io.core.brupdate, ldq(ldq_wakeup_idx).bits.uop), UpdateBrMask(io.core.brupdate, exe_tlb_uop(w))))) // added by tojauch for Meltdown Fix
   val mem_xcpt_causes = RegNext(widthMap(w =>
     Mux(ma_ld(w), rocket.Causes.misaligned_load.U,
     Mux(ma_st(w), rocket.Causes.misaligned_store.U,
@@ -743,7 +754,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
   // defaults
-  io.dmem.brupdate         := io.core.brupdate
+  io.dmem.brupdate       := io.core.brupdate
   io.dmem.exception      := io.core.exception
   io.dmem.rob_head_idx   := io.core.rob_head_idx
   io.dmem.rob_pnr_idx    := io.core.rob_pnr_idx
@@ -831,6 +842,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
     }
+
+    //##################################################################################################################
+    // modifications made by tojauch for Meltdown fix:
+
+    val ldq_idx = Mux(will_fire_load_incoming(w), ldq_incoming_idx(w), ldq_retry_idx)
+
+    // set failure bit for PFs detected in TLB or MAs 
+    when (will_fire_load_incoming(w) || will_fire_load_retry(w))
+    {
+      ldq(ldq_idx).bits.failure := ((will_fire_load_incoming(w) && (ae_ld(w) || ma_ld(w) || pf_ld(w))) || (will_fire_load_retry(w) && (ae_ld(w) || pf_ld(w))))
+    }
+
+    //##################################################################################################################
 
     //-------------------------------------------------------------
     // Write Addr into the LAQ/SAQ
@@ -1068,6 +1092,16 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val wb_forward_ld_addr  = RegNext(mem_forward_ld_addr)
   val wb_forward_stq_idx  = RegNext(mem_forward_stq_idx)
 
+  // added by tojauch for Meltdown fix
+  for (w <- 0 until memWidth) {
+    when((fired_load_incoming(w) || fired_load_retry(w)) && mem_xcpt_valid) {
+
+      s1_set_execute(lcam_ldq_idx(w)) := false.B
+      io.dmem.s1_kill(w) := RegNext(dmem_req_fire(w))
+
+    }
+  }
+
   for (i <- 0 until numLdqEntries) {
     val l_valid = ldq(i).valid
     val l_bits  = ldq(i).bits
@@ -1218,8 +1252,23 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Task 3: Clr unsafe bit in ROB for succesful translations
   //         Delay this a cycle to avoid going ahead of the exception broadcast
   //         The unsafe bit is cleared on the first translation, so no need to fire for load wakeups
+  //         Changed by tojauch to only clear unsafe bit when instr. is no longer squashable
   for (w <- 0 until memWidth) {
-    io.core.clr_unsafe(w).valid := RegNext((do_st_search(w) || do_ld_search(w)) && !fired_load_wakeup(w)) && false.B
+
+    val clearable = RegInit(true.B)
+    clearable := true.B
+
+    for (i <- 0 until numLdqEntries){
+      // if an older load or store is present, it must already be succeeded in order to clear the unsafe bit of the younger ld/st in ROB
+      when ((ldq(i).valid && IsOlder(ldq(i).bits.uop.rob_idx, lcam_uop(w).rob_idx, io.core.rob_head_idx) && !ldq(i).bits.succeeded)
+        || (stq(i).valid && IsOlder(stq(i).bits.uop.rob_idx, lcam_uop(w).rob_idx, io.core.rob_head_idx) && !stq(i).bits.succeeded)){
+        clearable := false.B
+      }
+    }
+
+    dontTouch(clearable)
+
+    io.core.clr_unsafe(w).valid := RegNext((do_st_search(w) || do_ld_search(w)) && !fired_load_wakeup(w) && !mem_xcpt_valids(w) && clearable) //added by tojauch for meltdown fix
     io.core.clr_unsafe(w).bits  := RegNext(lcam_uop(w).rob_idx)
   }
 
@@ -1466,6 +1515,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(idx).bits.executed         := false.B
       ldq(idx).bits.succeeded        := false.B
       ldq(idx).bits.order_fail       := false.B
+      ldq(idx).bits.failure          := false.B // added by tojauch for Meltdown fix
       ldq(idx).bits.forward_std_val  := false.B
 
     }
