@@ -1203,19 +1203,24 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   // ---------
   // First connect the ll_wport
   val ll_uop = ll_wbarb.io.out.bits.uop
-  rob.io.wb_resps(0).valid  := ll_wbarb.io.out.valid && !(ll_uop.uses_stq && !ll_uop.is_amo)
+  rob.io.wb_resps(0).valid  := ll_wbarb.io.out.valid && !(ll_uop.uses_stq && !ll_uop.is_amo) && !(io.lsu.is_specGetS(0) && ll_uop.uses_ldq)
   rob.io.wb_resps(0).bits   <> ll_wbarb.io.out.bits
   rob.io.debug_wb_valids(0) := ll_wbarb.io.out.valid && ll_uop.dst_rtype =/= RT_X
   rob.io.debug_wb_wdata(0)  := ll_wbarb.io.out.bits.data
   var cnt = 1
   for (i <- 1 until memWidth) {
     val mem_uop = mem_resps(i).bits.uop
-    rob.io.wb_resps(cnt).valid := mem_resps(i).valid && !(mem_uop.uses_stq && !mem_uop.is_amo)
+    rob.io.wb_resps(cnt).valid := mem_resps(i).valid && !(mem_uop.uses_stq && !mem_uop.is_amo) && !(io.lsu.is_specGetS(i) && mem_uop.uses_ldq)
     rob.io.wb_resps(cnt).bits  := mem_resps(i).bits
     rob.io.debug_wb_valids(cnt) := mem_resps(i).valid && mem_uop.dst_rtype =/= RT_X
     rob.io.debug_wb_wdata(cnt)  := mem_resps(i).bits.data
     cnt += 1
   }
+
+  when (io.lsu.is_specGetS(0)) {
+    assert(ll_uop.uses_ldq, "SpecGetS(0) asserted for non-load uop")
+  }
+  
   var f_cnt = 0 // rob fflags port index
   for (eu <- exe_units) {
     if (eu.writesIrf)
