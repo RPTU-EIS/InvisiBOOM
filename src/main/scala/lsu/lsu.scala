@@ -646,15 +646,20 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
   assert((memWidth == 1).B ||
     (!(will_fire_sfence.reduce(_||_) && !will_fire_sfence.reduce(_&&_)) &&
-     !will_fire_hella_incoming.reduce(_&&_) &&
-     !will_fire_hella_wakeup.reduce(_&&_)   &&
-     !will_fire_load_retry.reduce(_&&_)     &&
-     !will_fire_sta_retry.reduce(_&&_)      &&
-     !will_fire_store_commit.reduce(_&&_)   &&
-     !will_fire_load_wakeup.reduce(_&&_)),
+     !will_fire_hella_incoming.reduce(_&&_)  &&
+     !will_fire_hella_wakeup.reduce(_&&_)    &&
+     !will_fire_load_retry.reduce(_&&_)      &&
+     !will_fire_sta_retry.reduce(_&&_)       &&
+     !will_fire_store_commit.reduce(_&&_)    &&
+     !will_fire_load_wakeup.reduce(_&&_)     &&
+     !will_fire_load_validation.reduce(_&&_) &&
+     !will_fire_load_exposure.reduce(_&&_)),
     "Some operations is proceeding down multiple pipes")
 
   require(memWidth <= 2)
+
+  assert(!will_fire_load_validation.reduce(_||_) ||  ldq(ldq_validation_idx).bits.executed, "Speculative load validation on a non-speculative LDQ entry")
+  assert(!will_fire_load_exposure.reduce(_||_) || ldq(ldq_exposure_idx).bits.executed, "Speculative load exposure on a non-speculative LDQ entry")
 
   //--------------------------------------------
   // TLB Access
@@ -942,7 +947,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.is_specGetS := false.B
       s0_executing_loads(ldq_exposure_idx) := dmem_req_fire(w)
 
-      assert(!ldq_exposure_e.bits.executed && !ldq_exposure_e.bits.addr_is_virtual)
+      assert(ldq_exposure_e.bits.executed && !ldq_exposure_e.bits.addr_is_virtual)
     }
     .elsewhen (will_fire_load_validation(w)) {
       dmem_req(w).valid      := true.B
@@ -951,7 +956,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.is_specGetS := false.B
       s0_executing_loads(ldq_validation_idx) := dmem_req_fire(w)
 
-      assert(!ldq_validation_e.bits.executed && !ldq_validation_e.bits.addr_is_virtual)
+      assert(ldq_validation_e.bits.executed && !ldq_validation_e.bits.addr_is_virtual)
     }
 
     //##################################################################################################################
@@ -1498,7 +1503,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
             .otherwise{
                 sb(ldq_idx).valid := true.B
                 sb(ldq_idx).bits.data := io.dmem.resp(w).bits.data
-                ldq(ldq_idx).bits.executed := false.B // reset executed bit for remaining validation / exposure load
+//                ldq(ldq_idx).bits.executed := false.B // reset executed bit for remaining validation / exposure load (this is wrong: new load wakeup will fire if this is set to false)
                 when(ldq(ldq_idx).bits.invisi_state === Invisi_State.invisi_E){
                     ldq(ldq_idx).bits.invisi_state := Invisi_State.invisi_E_done
                 }
@@ -1523,6 +1528,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                 .otherwise{
                     // [TODO] Squash line and subsequent instructions
                     // [TODO] Move LDQ, SB tailpointer
+                    ldq(ldq_idx).bits.order_fail := true.B
+                    failed_loads(ldq_idx)        := true.B
                 }
             }
         }
@@ -1607,6 +1614,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                             do_forward_commit := true.B
                         }
                         .otherwise{
+                            ldq(f_idx).bits.order_fail := true.B
+                            failed_loads(f_idx)        := true.B
                             // [TODO] Squash line and subsequent instructions
                             // [TODO] Move LDQ, SB tailpointer
                         }
@@ -1680,6 +1689,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       {
         ldq(i).valid           := false.B
         ldq(i).bits.addr.valid := false.B
+        sb(i).valid            := false.B
       }
     }
   }
