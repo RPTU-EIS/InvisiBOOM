@@ -350,6 +350,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.failure         := false.B // added by tojauch for Meltdown fix
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
+      ldq(ld_enq_idx).bits.invisi_state    := Invisi_State.invisi_N
+      sb(ld_enq_idx).valid                 := false.B
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq(ld_enq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
@@ -484,16 +486,22 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Can we fire a speculative load validation
   val can_fire_load_validation = widthMap(w =>
                                     (w == memWidth-1).B &&
-                                    (IsOlder(ldq(ldq_validation_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)|| (ldq(ldq_validation_idx).bits.uop.rob_idx === io.core.rob_pnr_idx)) &&
-                                    (ldq(ldq_validation_idx).bits.invisi_state === Invisi_State.invisi_V_done) &&
+                                    ldq_validation_e.valid &&
+                                    !ldq_validation_e.bits.executed &&
+                                    !ldq_validation_e.bits.succeeded &&
+                                    (IsOlder(ldq_validation_e.bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)|| (ldq_validation_e.bits.uop.rob_idx === io.core.rob_pnr_idx)) &&
+                                    (ldq_validation_e.bits.invisi_state === Invisi_State.invisi_V_done) &&
                                     !p1_block_load_mask(ldq_validation_idx) &&
                                     !p2_block_load_mask(ldq_validation_idx))
 
   // Can we fire a speculative load exposure
   val can_fire_load_exposure = widthMap(w =>
                                     (w == memWidth-1).B &&
-                                    (IsOlder(ldq(ldq_exposure_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx) || (ldq(ldq_exposure_idx).bits.uop.rob_idx === io.core.rob_pnr_idx)) &&
-                                    (ldq(ldq_exposure_idx).bits.invisi_state === Invisi_State.invisi_E_done) &&
+                                    ldq_exposure_e.valid &&
+                                    !ldq_exposure_e.bits.executed &&
+                                    !ldq_exposure_e.bits.succeeded &&
+                                    (IsOlder(ldq_exposure_e.bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx) || (ldq_exposure_e.bits.uop.rob_idx === io.core.rob_pnr_idx)) &&
+                                    (ldq_exposure_e.bits.invisi_state === Invisi_State.invisi_E_done) &&
                                     !p1_block_load_mask(ldq_exposure_idx) &&
                                     !p2_block_load_mask(ldq_exposure_idx))
 
@@ -573,6 +581,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                               !store_needs_order                                       &&
                               !block_load_wakeup                                       &&
                               (w == memWidth-1).B                                      &&
+                              ldq_wakeup_e.bits.invisi_state =/= Invisi_State.invisi_E_done &&
+                              ldq_wakeup_e.bits.invisi_state =/= Invisi_State.invisi_V_done &&
                               (!ldq_wakeup_e.bits.addr_is_uncacheable || (io.core.commit_load_at_rob_head &&
                                                                           ldq_head === ldq_wakeup_idx &&
                                                                           ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U))))
@@ -658,8 +668,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   require(memWidth <= 2)
 
-  assert(!will_fire_load_validation.reduce(_||_) ||  ldq(ldq_validation_idx).bits.executed, "Speculative load validation on a non-speculative LDQ entry")
-  assert(!will_fire_load_exposure.reduce(_||_) || ldq(ldq_exposure_idx).bits.executed, "Speculative load exposure on a non-speculative LDQ entry")
+//  assert(!will_fire_load_validation.reduce(_||_) ||  ldq_validation_e.bits.executed, "Speculative load validation on a non-speculative LDQ entry")
+//  assert(!will_fire_load_exposure.reduce(_||_) || ldq_exposure_e.bits.executed, "Speculative load exposure on a non-speculative LDQ entry")
 
   //--------------------------------------------
   // TLB Access
@@ -835,7 +845,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val speculative_load_retry = WireInit(VecInit((0 until memWidth).map(x=>false.B)))
 
   for(w <- 0 until memWidth){
-    speculative_load_incoming(w) := IsOlder(io.core.rob_pnr_idx,  io.core.dis_uops(w).bits.rob_idx, io.core.rob_head_idx)
+    speculative_load_incoming(w) := IsOlder(io.core.rob_pnr_idx,  ldq_incoming_e(w).bits.uop.rob_idx, io.core.rob_head_idx)
     speculative_load_wakeup(w) := IsOlder(io.core.rob_pnr_idx,  ldq_wakeup_e.bits.uop.rob_idx, io.core.rob_head_idx)
     speculative_load_retry(w) := IsOlder(io.core.rob_pnr_idx,  ldq_retry_e.bits.uop.rob_idx, io.core.rob_head_idx)
   }
@@ -947,7 +957,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.is_specGetS := false.B
       s0_executing_loads(ldq_exposure_idx) := dmem_req_fire(w)
 
-      assert(ldq_exposure_e.bits.executed && !ldq_exposure_e.bits.addr_is_virtual)
+      assert(!ldq_exposure_e.bits.executed && !ldq_exposure_e.bits.addr_is_virtual)
     }
     .elsewhen (will_fire_load_validation(w)) {
       dmem_req(w).valid      := true.B
@@ -956,7 +966,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.is_specGetS := false.B
       s0_executing_loads(ldq_validation_idx) := dmem_req_fire(w)
 
-      assert(ldq_validation_e.bits.executed && !ldq_validation_e.bits.addr_is_virtual)
+      assert(!ldq_validation_e.bits.executed && !ldq_validation_e.bits.addr_is_virtual)
     }
 
     //##################################################################################################################
@@ -1495,15 +1505,16 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         // The line requested by a USL arrives at the core
         when(io.dmem.resp(w).bits.is_specGetS === true.B){
             assert(!sb(ldq_idx).valid, "Load to an already filled SB entry")
-            when(IsOlder(ldq(ldq_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) { // load has become non-squashable while mem operation
+            when((IsOlder(ldq(ldq_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) || (ldq(ldq_idx).bits.uop.rob_idx === io.core.rob_pnr_idx)) { // load has become non-squashable while mem operation
                 ldq(ldq_idx).bits.invisi_state := Invisi_State.invisi_N
                 ldq(ldq_idx).bits.succeeded      := (io.core.exe(w).iresp.valid || io.core.exe(w).fresp.valid)
                 ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data
+                io.core.is_specGetS(w) := false.B
             }
             .otherwise{
                 sb(ldq_idx).valid := true.B
                 sb(ldq_idx).bits.data := io.dmem.resp(w).bits.data
-//                ldq(ldq_idx).bits.executed := false.B // reset executed bit for remaining validation / exposure load (this is wrong: new load wakeup will fire if this is set to false)
+                ldq(ldq_idx).bits.executed := false.B // reset executed bit for remaining validation / exposure load (this is wrong: new load wakeup will fire if this is set to false)
                 when(ldq(ldq_idx).bits.invisi_state === Invisi_State.invisi_E){
                     ldq(ldq_idx).bits.invisi_state := Invisi_State.invisi_E_done
                 }
@@ -1582,7 +1593,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         
         when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
 
-            when(IsOlder(ldq(f_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)){ // load has become non-squashable while forwarding
+            when((IsOlder(ldq(f_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) || (ldq(f_idx).bits.uop.rob_idx === io.core.rob_pnr_idx)){ // load has become non-squashable while forwarding
                 ldq(f_idx).bits.invisi_state := Invisi_State.invisi_N
                 do_forward_commit := true.B
             }
@@ -1591,6 +1602,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                 when(sb(f_idx).valid === false.B){
                     sb(f_idx).valid := true.B
                     sb(f_idx).bits.data := loadgen.data
+                    io.core.is_specGetS(w) := true.B // to avoid resetting rob_bsy flag
+                    ldq(f_idx).bits.executed := false.B // to allow start load validation / exposure
                     when(ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E){
                         ldq(f_idx).bits.invisi_state := Invisi_State.invisi_E_done
                     }
@@ -1690,6 +1703,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(i).valid           := false.B
         ldq(i).bits.addr.valid := false.B
         sb(i).valid            := false.B
+        printf("Killed by branch ldq[%d]\n", i.U)
       }
     }
   }
