@@ -1541,6 +1541,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                     // [TODO] Move LDQ, SB tailpointer
                     ldq(ldq_idx).bits.order_fail := true.B
                     failed_loads(ldq_idx)        := true.B
+                    ldq(ldq_idx).bits.succeeded := false.B
+                    io.core.is_specGetS(w) := true.B // to inform ROB not to commit [TODO] use some other mechanism to do this
                 }
             }
         }
@@ -1629,6 +1631,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                         .otherwise{
                             ldq(f_idx).bits.order_fail := true.B
                             failed_loads(f_idx)        := true.B
+                            io.core.is_specGetS(w) := true.B // to inform ROB not to commit [TODO] use some other mechanism to do this
                             // [TODO] Squash line and subsequent instructions
                             // [TODO] Move LDQ, SB tailpointer
                         }
@@ -1703,7 +1706,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(i).valid           := false.B
         ldq(i).bits.addr.valid := false.B
         sb(i).valid            := false.B
-        printf("Killed by branch ldq[%d]\n", i.U)
       }
     }
   }

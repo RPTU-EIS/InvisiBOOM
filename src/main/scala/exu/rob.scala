@@ -511,22 +511,6 @@ class Rob(
       }
       val temp_uop = rob_uop(GetRowIdx(rob_idx))
 
-      when(io.wb_resps(i).valid && MatchBank(GetBankIdx(rob_idx)) &&
-        !rob_bsy(GetRowIdx(rob_idx))){
-        printf("[ROB DEBUG]:writeback to not-busy ROB entry rob_idx: %d, coreWidth: %d, GetBankIdx(rob_idx): %d, io.wb_resps(i).valid: %d, MatchBank(GetBankIdx(rob_idx)): %d, rob_bsy(GetRowIdx(rob_idx)): %d\n", rob_idx, coreWidth.U, GetBankIdx(rob_idx), io.wb_resps(i).valid, MatchBank(GetBankIdx(rob_idx)), rob_bsy(GetRowIdx(rob_idx)))
-      }
-        .elsewhen(io.wb_resps(i).valid && MatchBank(GetBankIdx(rob_idx)) &&
-          !rob_val(GetRowIdx(rob_idx))){
-          printf("[ROB DEBUG]: writeback to invalid ROB entry rob_idx: %d, coreWidth: %d, GetBankIdx(rob_idx): %d, io.wb_resps(i).valid: %d, MatchBank(GetBankIdx(rob_idx)): %d, rob_val(GetRowIdx(rob_idx)): %d\n", rob_idx, coreWidth.U, GetBankIdx(rob_idx), io.wb_resps(i).valid, MatchBank(GetBankIdx(rob_idx)), rob_val(GetRowIdx(rob_idx)))
-        }
-        .elsewhen(io.wb_resps(i).valid && MatchBank(GetBankIdx(rob_idx)) &&
-          temp_uop.ldst_val && temp_uop.pdst =/= io.wb_resps(i).bits.uop.pdst){
-          printf("[ROB DEBUG]: writeback to wrong pdst rob_idx: %d, io.wb_resps(i).valid: %d, MatchBank(GetBankIdx(rob_idx)): %d, temp_uop.ldst_val: %d, temp_uop.pdst: %d, io.wb_resps(i).bits.uop.pdst: %d\n", rob_idx, io.wb_resps(i).valid, MatchBank(GetBankIdx(rob_idx)), temp_uop.ldst_val, temp_uop.pdst, io.wb_resps(i).bits.uop.pdst)
-        }
-//        .otherwise{
-//          printf("[ROB DEBUG]: correct\n")
-//        }
-
       assert (!(io.wb_resps(i).valid && MatchBank(GetBankIdx(rob_idx)) &&
                !rob_val(GetRowIdx(rob_idx))),
                "[rob] writeback (" + i + ") occurred to an invalid ROB entry.")
