@@ -75,6 +75,9 @@ class RobIo(
   // Port for unmarking loads/stores as speculation hazards..
   val lsu_clr_unsafe   = Input(Vec(memWidth, Valid(UInt(robAddrSz.W))))
 
+  // Port for unmarking Invisi-Validated loads
+  val lsu_clr_unsafe_invisi = Input(Vec(memWidth, Valid(UInt(robAddrSz.W))))
+
 
   // Track side-effects for debug purposes.
   // Also need to know when loads write back, whereas we don't need loads to unbusy.
@@ -366,11 +369,23 @@ class Rob(
         assert (rob_bsy(cidx) === true.B, "[rob] store writing back to a not-busy entry.")
       }
     }
-    for (clr <- io.lsu_clr_unsafe) {
-      when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
-        val cidx = GetRowIdx(clr.bits)
-        rob_unsafe(cidx) := false.B
+//    for (clr <- io.lsu_clr_unsafe) {
+//      when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
+//        val cidx = GetRowIdx(clr.bits)
+//        rob_unsafe(cidx) := false.B
+//      }
+//    }
+
+    for (idx <- 0 until rob_unsafe.length) {
+
+      val hit0 = io.lsu_clr_unsafe.map(clr => clr.valid && MatchBank(GetBankIdx(clr.bits)) && (GetRowIdx(clr.bits) === idx.U)).reduce(_ || _)
+      val hit1 = io.lsu_clr_unsafe_invisi.map(clr => clr.valid && MatchBank(GetBankIdx(clr.bits)) && (GetRowIdx(clr.bits) === idx.U)).reduce(_ || _)
+
+      when (hit0 || hit1) {
+        rob_unsafe(idx) := false.B
       }
+
+      assert(~(hit0 && hit1), "Only one of lsu_clr_unsafe_invisi can not be true on lsu_clr_unsafe true entries")
     }
 
 

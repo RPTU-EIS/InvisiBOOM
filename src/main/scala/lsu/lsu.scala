@@ -162,7 +162,8 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
     val tlbMiss = Bool()
   })
 
-  val is_specGetS = Output(Vec(memWidth, Bool()))
+  val is_specGetS       = Output(Vec(memWidth, Bool()))
+  val clr_unsafe_invisi = Output(Vec(memWidth, Valid(UInt(robAddrSz.W))))
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -1057,6 +1058,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val fired_load_wakeup    = widthMap(w => RegNext(will_fire_load_wakeup  (w) && !IsKilledByBranch(io.core.brupdate, ldq_wakeup_e.bits.uop)))
   val fired_hella_incoming = RegNext(will_fire_hella_incoming)
   val fired_hella_wakeup   = RegNext(will_fire_hella_wakeup)
+  val fired_load_validation= RegNext(will_fire_load_validation)
+  val fired_load_exposure  = RegNext(will_fire_load_exposure)
 
   val mem_incoming_uop     = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, exe_req(w).bits.uop)))
   val mem_ldq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, ldq_incoming_e(w))))
@@ -1064,10 +1067,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val mem_ldq_wakeup_e     = RegNext(UpdateBrMask(io.core.brupdate, ldq_wakeup_e))
   val mem_ldq_retry_e      = RegNext(UpdateBrMask(io.core.brupdate, ldq_retry_e))
   val mem_stq_retry_e      = RegNext(UpdateBrMask(io.core.brupdate, stq_retry_e))
+  val mem_ldq_exposure_e   = RegNext(UpdateBrMask(io.core.brupdate, ldq_exposure_e))
+  val mem_ldq_validation_e = RegNext(UpdateBrMask(io.core.brupdate, ldq_validation_e))
   val mem_ldq_e            = widthMap(w =>
-                             Mux(fired_load_incoming(w), mem_ldq_incoming_e(w),
-                             Mux(fired_load_retry   (w), mem_ldq_retry_e,
-                             Mux(fired_load_wakeup  (w), mem_ldq_wakeup_e, (0.U).asTypeOf(Valid(new LDQEntry))))))
+                             Mux(fired_load_incoming  (w), mem_ldq_incoming_e(w),
+                             Mux(fired_load_retry     (w), mem_ldq_retry_e,
+                             Mux(fired_load_wakeup    (w), mem_ldq_wakeup_e,
+                             Mux(fired_load_exposure  (w), mem_ldq_exposure_e,
+                             Mux(fired_load_validation(w), mem_ldq_validation_e, (0.U).asTypeOf(Valid(new LDQEntry))))))))
   val mem_stq_e            = widthMap(w =>
                              Mux(fired_stad_incoming(w) ||
                                  fired_sta_incoming (w), mem_stq_incoming_e(w),
@@ -1167,7 +1174,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val do_st_search = widthMap(w => (fired_stad_incoming(w) || fired_sta_incoming(w) || fired_sta_retry(w)) && !mem_tlb_miss(w))
   // We translated a load last cycle
   val do_ld_search = widthMap(w => ((fired_load_incoming(w) || fired_load_retry(w)) && !mem_tlb_miss(w)) ||
-                     fired_load_wakeup(w))
+                     fired_load_wakeup(w) || fired_load_exposure(w) || fired_load_validation(w))
   // We are making a local line visible to other harts
   val do_release_search = widthMap(w => fired_release(w))
 
@@ -1186,9 +1193,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val lcam_st_dep_mask = widthMap(w => mem_ldq_e(w).bits.st_dep_mask)
   val lcam_is_release = widthMap(w => fired_release(w))
   val lcam_ldq_idx  = widthMap(w =>
-                      Mux(fired_load_incoming(w), mem_incoming_uop(w).ldq_idx,
-                      Mux(fired_load_wakeup  (w), RegNext(ldq_wakeup_idx),
-                      Mux(fired_load_retry   (w), RegNext(ldq_retry_idx), 0.U))))
+                      Mux(fired_load_incoming  (w), mem_incoming_uop(w).ldq_idx,
+                      Mux(fired_load_wakeup    (w), RegNext(ldq_wakeup_idx),
+                      Mux(fired_load_retry     (w), RegNext(ldq_retry_idx),
+                      Mux(fired_load_exposure  (w), RegNext(ldq_exposure_idx),
+                      Mux(fired_load_validation(w), RegNext(ldq_validation_idx), 0.U))))))
   val lcam_stq_idx  = widthMap(w =>
                       Mux(fired_stad_incoming(w) ||
                           fired_sta_incoming (w), mem_incoming_uop(w).stq_idx,
@@ -1290,6 +1299,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           // we need to kill ourselves, and prevent forwarding
           val older_nacked = nacking_loads(i) || RegNext(nacking_loads(i))
           when (!(l_bits.executed || l_bits.succeeded) || older_nacked) {
+//            printf("[DEBUG] Nack1: lcam_ldq_idx(%d): %d\n", w.U, lcam_ldq_idx(w))
             s1_set_execute(lcam_ldq_idx(w))    := false.B
             io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
             can_forward(w)                     := false.B
@@ -1315,18 +1325,22 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           ldst_forward_matches(w)(i)         := true.B
           io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
           s1_set_execute(lcam_ldq_idx(w))    := false.B
+//          printf("[DEBUG] Nack2: lcam_ldq_idx(%d): %d\n", w.U, lcam_ldq_idx(w))
+
         }
           .elsewhen (((lcam_mask(w) & write_mask) =/= 0.U) && dword_addr_matches(w))
         {
           ldst_addr_matches(w)(i)            := true.B
           io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
           s1_set_execute(lcam_ldq_idx(w))    := false.B
+//          printf("[DEBUG] Nack3: lcam_ldq_idx(%d): %d\n", w.U, lcam_ldq_idx(w))
         }
           .elsewhen (s_uop.is_fence || s_uop.is_amo)
         {
           ldst_addr_matches(w)(i)            := true.B
           io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
           s1_set_execute(lcam_ldq_idx(w))    := false.B
+//          printf("[DEBUG] Nack4: lcam_ldq_idx(%d): %d\n", w.U, lcam_ldq_idx(w))
         }
       }
     }
@@ -1394,8 +1408,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
 
     dontTouch(clearable)
-
-    io.core.clr_unsafe(w).valid := RegNext((do_st_search(w) || do_ld_search(w)) && !fired_load_wakeup(w) && !mem_xcpt_valids(w) && clearable) //added by tojauch for meltdown fix
+    io.core.clr_unsafe(w).valid := RegNext((do_st_search(w) || (do_ld_search(w) && (mem_ldq_e(w).bits.invisi_state === Invisi_State.invisi_N))) && !fired_load_wakeup(w) && !mem_xcpt_valids(w) && clearable) //added by tojauch for meltdown fix
     io.core.clr_unsafe(w).bits  := RegNext(lcam_uop(w).rob_idx)
   }
 
@@ -1501,6 +1514,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dmem_resp_fired(w) := true.B
 
         io.core.is_specGetS(w) := io.dmem.resp(w).bits.is_specGetS // Inform ROB that if the load is a USL then it can not be commited yet.
+        io.core.clr_unsafe_invisi(w).valid := false.B
+        io.core.clr_unsafe_invisi(w).bits  := 0.U
 
         // The line requested by a USL arrives at the core
         when(io.dmem.resp(w).bits.is_specGetS === true.B){
@@ -1535,6 +1550,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
             .elsewhen(ldq(ldq_idx).bits.invisi_state === Invisi_State.invisi_V_done){
                 when(sb(ldq_idx).bits.data === io.dmem.resp(w).bits.data){
                     ldq(ldq_idx).bits.invisi_state := Invisi_State.invisi_N
+                    io.core.clr_unsafe_invisi(w).valid := true.B
+                    io.core.clr_unsafe_invisi(w).bits := io.dmem.resp(w).bits.uop.rob_idx
                 }
                 .otherwise{
                     // [TODO] Squash line and subsequent instructions
@@ -1592,8 +1609,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (data_ready && live) {
 
         val do_forward_commit = WireDefault(false.B)
-        
-        when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
+
+//        when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
+        when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E_done) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V_done)){
 
             when((IsOlder(ldq(f_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) || (ldq(f_idx).bits.uop.rob_idx === io.core.rob_pnr_idx)){ // load has become non-squashable while forwarding
                 ldq(f_idx).bits.invisi_state := Invisi_State.invisi_N
@@ -1601,7 +1619,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
             }
             .otherwise{ // still the load is speculative
                 // when data is forwared requested by a USL, get the data to sb entry
-                when(sb(f_idx).valid === false.B){
+              when(sb(f_idx).valid === false.B){
+//              when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
                     sb(f_idx).valid := true.B
                     sb(f_idx).bits.data := loadgen.data
                     io.core.is_specGetS(w) := true.B // to avoid resetting rob_bsy flag
@@ -1622,11 +1641,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                         do_forward_commit := true.B
                     }
                     .elsewhen(ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V_done){
-                        when(sb(f_idx).bits.data === io.dmem.resp(w).bits.data){ // validation
+//                      when(sb(f_idx).bits.data === io.dmem.resp(w).bits.data){ // validation
+                      when(sb(f_idx).bits.data === loadgen.data){ // validation
                             ldq(f_idx).bits.invisi_state := Invisi_State.invisi_N
 
                             // get the data to ldq at the visibility point 
                             do_forward_commit := true.B
+                            io.core.clr_unsafe_invisi(w).valid := true.B
+                            io.core.clr_unsafe_invisi(w).bits := io.dmem.resp(w).bits.uop.rob_idx
+//                            printf("forward invisi_v_done data same f_idx:%d data: %x\n", f_idx, loadgen.data)
                         }
                         .otherwise{
                             ldq(f_idx).bits.order_fail := true.B
@@ -1736,6 +1759,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     } .elsewhen (commit_load) {
       assert (ldq(idx).valid, "[lsu] trying to commit an un-allocated load entry.")
     //   assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
+//      when(!((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded && (ldq(idx).bits.invisi_state === Invisi_State.invisi_N))){
+//        printf("idx: %d, executed: %d, forward_std_val :%d, succeeded: %d, invisi_state: %d\n", idx, ldq(idx).bits.executed, ldq(idx).bits.forward_std_val, ldq(idx).bits.succeeded, ldq(idx).bits.invisi_state.asUInt)
+//      }
       assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded && (ldq(idx).bits.invisi_state === Invisi_State.invisi_N) ,
         "[lsu] trying to commit an un-executed load entry.")
 
