@@ -1610,7 +1610,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
         val do_forward_commit = WireDefault(false.B)
 
-//        when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
         when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E_done) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V_done)){
 
             when((IsOlder(ldq(f_idx).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) || (ldq(f_idx).bits.uop.rob_idx === io.core.rob_pnr_idx)){ // load has become non-squashable while forwarding
@@ -1619,8 +1618,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
             }
             .otherwise{ // still the load is speculative
                 // when data is forwared requested by a USL, get the data to sb entry
-              when(sb(f_idx).valid === false.B){
-//              when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
+                when((ldq(f_idx).bits.invisi_state === Invisi_State.invisi_E) || (ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V)){
                     sb(f_idx).valid := true.B
                     sb(f_idx).bits.data := loadgen.data
                     io.core.is_specGetS(w) := true.B // to avoid resetting rob_bsy flag
@@ -1641,8 +1639,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                         do_forward_commit := true.B
                     }
                     .elsewhen(ldq(f_idx).bits.invisi_state === Invisi_State.invisi_V_done){
-//                      when(sb(f_idx).bits.data === io.dmem.resp(w).bits.data){ // validation
-                      when(sb(f_idx).bits.data === loadgen.data){ // validation
+                        when(sb(f_idx).bits.data === loadgen.data){ // validation
                             ldq(f_idx).bits.invisi_state := Invisi_State.invisi_N
 
                             // get the data to ldq at the visibility point 
