@@ -164,6 +164,7 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
 
   val is_specGetS       = Output(Vec(memWidth, Bool()))
   val clr_unsafe_invisi = Output(Vec(memWidth, Valid(UInt(robAddrSz.W))))
+  val fence_count       = Input(Vec(coreWidth, UInt(log2Ceil(numRobRows).W)))
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -871,7 +872,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(i).valid && IsOlder(i.U, ldq_incoming_idx(w), ldq_head)
       }
       val exist_older_loads = older_load_mask.reduce(_||_)
-      ldq(ldq_incoming_idx(w)).bits.invisi_state := Mux(speculative_load_incoming(w), Mux(exist_older_loads, Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
+//      ldq(ldq_incoming_idx(w)).bits.invisi_state := Mux(speculative_load_incoming(w), Mux(exist_older_loads, Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
+      ldq(ldq_incoming_idx(w)).bits.invisi_state := Mux(speculative_load_incoming(w), Mux((io.core.fence_count.map(_ =/= 0.U).reduce(_ || _)), Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
 
       s0_executing_loads(ldq_incoming_idx(w)) := dmem_req_fire(w)
       assert(!ldq_incoming_e(w).bits.executed)
@@ -886,8 +888,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }
       val exist_older_loads = older_load_mask.reduce(_||_)
       // set again invisi_state when send dmem_request
-      ldq(ldq_retry_idx).bits.invisi_state := Mux(speculative_load_retry(w), Mux(exist_older_loads, Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
-
+//      ldq(ldq_retry_idx).bits.invisi_state := Mux(speculative_load_retry(w), Mux(exist_older_loads, Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
+      ldq(ldq_retry_idx).bits.invisi_state := Mux(speculative_load_retry(w), Mux((io.core.fence_count.map(_ =/= 0.U).reduce(_ || _)), Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
 
       s0_executing_loads(ldq_retry_idx) := dmem_req_fire(w)
       assert(!ldq_retry_e.bits.executed)
@@ -916,7 +918,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }
       val exist_older_loads = older_load_mask.reduce(_||_)
       // set again invisi_state when send dmem_request
-      ldq(ldq_wakeup_idx).bits.invisi_state := Mux(speculative_load_wakeup(w), Mux(exist_older_loads, Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
+//      ldq(ldq_wakeup_idx).bits.invisi_state := Mux(speculative_load_wakeup(w), Mux(exist_older_loads, Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
+      ldq(ldq_wakeup_idx).bits.invisi_state := Mux(speculative_load_wakeup(w), Mux((io.core.fence_count.map(_ =/= 0.U).reduce(_ || _)), Invisi_State.invisi_V, Invisi_State.invisi_E), Invisi_State.invisi_N)
 
       s0_executing_loads(ldq_wakeup_idx) := dmem_req_fire(w)
 
@@ -1075,6 +1078,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                              Mux(fired_load_wakeup    (w), mem_ldq_wakeup_e,
                              Mux(fired_load_exposure  (w), mem_ldq_exposure_e,
                              Mux(fired_load_validation(w), mem_ldq_validation_e, (0.U).asTypeOf(Valid(new LDQEntry))))))))
+  val mem_ldq_e_InvisiState = widthMap(w => // This is generated 1 cycle late. Should not be registered twice
+                              Mux(fired_load_incoming (w), ldq_incoming_e(w).bits.invisi_state,
+                              Mux(fired_load_retry    (w), ldq_retry_e.bits.invisi_state,
+                              Mux(fired_load_wakeup   (w), ldq_wakeup_e.bits.invisi_state,
+                              Mux(fired_load_exposure (w), ldq_exposure_e.bits.invisi_state,
+                              Mux(fired_load_validation(w), ldq_validation_e.bits.invisi_state, Invisi_State.invisi_N))))))
   val mem_stq_e            = widthMap(w =>
                              Mux(fired_stad_incoming(w) ||
                                  fired_sta_incoming (w), mem_stq_incoming_e(w),
@@ -1408,7 +1417,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
 
     dontTouch(clearable)
-    io.core.clr_unsafe(w).valid := RegNext((do_st_search(w) || (do_ld_search(w) && (mem_ldq_e(w).bits.invisi_state === Invisi_State.invisi_N))) && !fired_load_wakeup(w) && !mem_xcpt_valids(w) && clearable) //added by tojauch for meltdown fix
+    io.core.clr_unsafe(w).valid := RegNext((do_st_search(w) || (do_ld_search(w) && (mem_ldq_e_InvisiState(w) === Invisi_State.invisi_N))) && !fired_load_wakeup(w) && !mem_xcpt_valids(w) && clearable) //added by tojauch for meltdown fix
     io.core.clr_unsafe(w).bits  := RegNext(lcam_uop(w).rob_idx)
   }
 

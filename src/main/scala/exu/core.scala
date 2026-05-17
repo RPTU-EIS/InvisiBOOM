@@ -1288,6 +1288,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   rob.io.lsu_clr_unsafe        := io.lsu.clr_unsafe
   rob.io.lxcpt                 <> io.lsu.lxcpt
   rob.io.lsu_clr_unsafe_invisi := io.lsu.clr_unsafe_invisi
+  io.lsu.fence_count           := rob.io.fence_count
 
   assert (!(csr.io.singleStep), "[core] single-step is unsupported.")
 

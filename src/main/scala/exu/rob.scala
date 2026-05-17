@@ -111,7 +111,7 @@ class RobIo(
   // Stall the frontend if we know we will redirect the PC
   val flush_frontend = Output(Bool())
 
-
+  val fence_count       = Output(Vec(coreWidth, UInt(log2Ceil(numRobRows).W)))
   val debug_tsc = Input(UInt(xLen.W))
 }
 
@@ -256,6 +256,8 @@ class Rob(
 
   val exception_thrown = Wire(Bool())
 
+  val fence_count = RegInit(VecInit(Seq.fill(coreWidth)(0.U(log2Ceil(numRobRows).W))))
+
   // exception info
   // TODO compress xcpt cause size. Most bits in the middle are zero.
   val r_xcpt_val       = RegInit(false.B)
@@ -323,6 +325,8 @@ class Rob(
     rob_debug_inst_wmask(w) := io.enq_valids(w)
     rob_debug_inst_wdata(w) := io.enq_uops(w).debug_inst
 
+    io.fence_count(w) := fence_count(w)
+
     when (io.enq_valids(w)) {
       rob_val(rob_tail)       := true.B
       rob_bsy(rob_tail)       := !(io.enq_uops(w).is_fence ||
@@ -332,6 +336,10 @@ class Rob(
       rob_exception(rob_tail) := io.enq_uops(w).exception
       rob_predicated(rob_tail)   := false.B
       rob_fflags(rob_tail)    := 0.U
+
+      when(io.enq_uops(w).is_fence){
+        fence_count(w) := fence_count(w) + 1.U
+      }
 
       assert (rob_val(rob_tail) === false.B, "[rob] overwriting a valid entry.")
       assert ((io.enq_uops(w).rob_idx >> log2Ceil(coreWidth)) === rob_tail)
@@ -489,6 +497,12 @@ class Rob(
     // Commit
     when (will_commit(w)) {
       rob_val(rob_head) := false.B
+    }
+
+    when (will_commit(w)) {
+      when(rob_uop(rob_head).is_fence && (fence_count(w) > 0.U)){
+        fence_count(w) := fence_count(w) - 1.U
+      }
     }
 
     // -----------------------------------------------
