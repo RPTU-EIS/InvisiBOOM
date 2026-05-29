@@ -1475,6 +1475,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.exe(w).iresp.valid := false.B
     io.core.exe(w).fresp.valid := false.B
     io.core.is_specGetS(w) := false.B
+
+    io.core.clr_unsafe_invisi(w).valid := false.B
+    io.core.clr_unsafe_invisi(w).bits  := 0.U
   }
 
   val dmem_resp_fired = WireInit(widthMap(w => false.B))
@@ -1523,8 +1526,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dmem_resp_fired(w) := true.B
 
         io.core.is_specGetS(w) := io.dmem.resp(w).bits.is_specGetS // Inform ROB that if the load is a USL then it can not be commited yet.
-        io.core.clr_unsafe_invisi(w).valid := false.B
-        io.core.clr_unsafe_invisi(w).bits  := 0.U
 
         // The line requested by a USL arrives at the core
         when(io.dmem.resp(w).bits.is_specGetS === true.B){
