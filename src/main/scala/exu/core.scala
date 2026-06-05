@@ -1217,10 +1217,10 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
     cnt += 1
   }
 
-  when (io.lsu.is_specGetS(0)) {
+  when (io.lsu.is_specGetS(0) && mem_resps(0).valid) {
     assert(ll_uop.uses_ldq, "SpecGetS(0) asserted for non-load uop")
   }
-  
+
   var f_cnt = 0 // rob fflags port index
   for (eu <- exe_units) {
     if (eu.writesIrf)
@@ -1250,7 +1250,8 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   require(cnt == numIrfWritePorts)
   if (usingFPU) {
     for ((wdata, wakeup) <- fp_pipeline.io.debug_wb_wdata zip fp_pipeline.io.wakeups) {
-      rob.io.wb_resps(cnt) <> wakeup
+      rob.io.wb_resps(cnt).valid := wakeup.valid && !(io.lsu.is_specGetS(0) && wakeup.bits.uop.uses_ldq) // [TODO] This is correct only when memWidth = 1 (not suitable for MegaBOOM config). How to parameterize this?
+      rob.io.wb_resps(cnt).bits <> wakeup.bits
       rob.io.fflags(f_cnt) <> wakeup.bits.fflags
       rob.io.debug_wb_valids(cnt) := wakeup.valid
       rob.io.debug_wb_wdata(cnt) := wdata
