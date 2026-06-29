@@ -29,8 +29,8 @@ Speculative execution improves CPU performance, but it comes with a security cos
 - Speculative loads can become **transient instructions** — instructions that execute but are never meant to commit.
 - These transient instructions still leave **observable changes in the cache hierarchy**, enabling **microarchitectural side channels**.
 - Attackers exploit this to leak sensitive data:
-  - **Meltdown** — relies on generating exceptions.
-  - **Spectre** — requires **no exceptions at all**, making it harder to mitigate.
+  - **Meltdown**: relies on generating exceptions.
+  - **Spectre**: requires **no exceptions at all**, making it harder to mitigate.
 
 ### Existing Fixes
 
@@ -54,7 +54,7 @@ It defines two protection models:
 | **V1** | Spectre-like attacks based on **branch speculation** |
 | **V2** | Futuristic attacks where **any speculative load** may pose a threat |
 
-This project implements **Model V2** — the stronger, more general model.
+This project implements the **Futuristic Model**, as it provides stronger security guarantees and is the more general model.
 
 **Core mechanism:**
 - USLs read data into a **speculative buffer**, without modifying the cache hierarchy.
@@ -190,17 +190,18 @@ This is a conservative but correctness-preserving simplification, at the cost of
 | Scenario | Status |
 |---|---|
 | Same thread | ✅ Currently supported |
-| Cross-core | ❌ Not currently supported |
-| SMT | ❌ Not supported (BOOM itself has no SMT support) |
+| Cross-core | ❌ Currently not supported |
+| SMT | ❌ No SMT support in BOOM |
 
 ---
 
 ## Related Work
 
-Other defenses against speculative (Spectre-class) side-channel attacks:
+Defenses against speculative (Spectre-class) side channel attacks:
 
-- Kiriansky et al. — *SafeSpec: Banishing the Spectre of a Meltdown with Leakage-Free Speculation* (ISCA, 2018)
-- Yan et al. — *InvisiSpec: Making Speculative Execution Invisible in the Cache Hierarchy* (MICRO, 2018)
-- Wang et al. — *DAWG: A Defense Against Cache Timing Attacks in Speculative Execution Processors* (MICRO, 2018)
+- Kiriansky et al.: *SafeSpec: Banishing the Spectre of a Meltdown with Leakage-Free Speculation* (ISCA 2018)
+- Yan et al.: *InvisiSpec: Making Speculative Execution Invisible in the Cache Hierarchy* (MICRO 2018)
+- Wang et al.: *DAWG: A Defense Against Cache Timing Attacks in Speculative Execution Processors* (MICRO 2018)
+- Yu et al.: *Speculative Taint Tracking (STT): A Comprehensive Protection for Speculatively Accessed Data* (MICRO 2019)
 
 ---
